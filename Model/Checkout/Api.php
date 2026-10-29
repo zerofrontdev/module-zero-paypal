@@ -15,6 +15,7 @@ use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\HTTP\Client\CurlFactory;
 use Magento\Store\Model\ScopeInterface;
 use Psr\Log\LoggerInterface;
+use Zero\Core\Model\Http\JsonClient;
 
 /**
  * PayPal's REST API (Orders v2, Payments v2) for zero_paypal_checkout: an
@@ -29,6 +30,7 @@ class Api
 
     public function __construct(
         private readonly CurlFactory $curlFactory,
+        private readonly JsonClient $client,
         private readonly ScopeConfigInterface $scopeConfig,
         private readonly EncryptorInterface $encryptor,
         private readonly CacheInterface $cache,
@@ -92,25 +94,24 @@ class Api
     {
         $token = $this->accessToken($storeId);
         try {
-            $curl = $this->curlFactory->create();
-            $curl->setTimeout($this->timeout);
-            $curl->addHeader('Authorization', 'Bearer ' . $token);
-            $curl->addHeader('Accept', 'application/json');
+            // Retried requests aren't done twice (PayPal-Request-Id makes them idempotent).
+            $headers = ['Authorization' => 'Bearer ' . $token];
             if ($method === 'POST') {
-                $curl->addHeader('Content-Type', 'application/json');
-                // Retried requests aren't done twice (PayPal-Request-Id makes them idempotent).
-                $curl->addHeader('PayPal-Request-Id', sha1($path . json_encode($body)));
-                $curl->post($this->host($storeId) . $path, $body === null ? '{}' : (string) json_encode($body, JSON_UNESCAPED_SLASHES));
-            } else {
-                $curl->get($this->host($storeId) . $path);
+                $headers['PayPal-Request-Id'] = sha1($path . json_encode($body));
             }
-            $status = $curl->getStatus();
-            $answer = json_decode((string) $curl->getBody(), true);
+            ['status' => $status, 'body' => $answer] = $this->client->request(
+                $method,
+                $this->host($storeId) . $path,
+                $body,
+                $headers,
+                $this->timeout,
+                true
+            );
         } catch (\Throwable $e) {
             $this->logger->warning('Zero PayPal Checkout: ' . $path . ': ' . $e->getMessage());
             throw new LocalizedException(__('PayPal is not answering. Please try again in a minute.'), $e);
         }
-        if (!is_array($answer) || ($status >= 300 && !($acceptRefusal && $status >= 400 && $status < 500))) {
+        if ($answer === null || ($status >= 300 && !($acceptRefusal && $status >= 400 && $status < 500))) {
             $name = is_array($answer) ? (string) ($answer['name'] ?? '') : '';
             $this->logger->warning(sprintf('Zero PayPal Checkout: %s: HTTP %d %s', $path, $status, $name));
             throw new LocalizedException(__('PayPal refused the request: %1', $name !== '' ? $name : 'HTTP ' . $status));

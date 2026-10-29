@@ -11,6 +11,7 @@ namespace Zero\Paypal\Model\Checkout;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Sales\Model\Order;
 use Zero\Checkout\Model\RedirectPayment\OrderPayment;
+use Zero\Checkout\Model\RedirectPayment\OrderUpdaterInterface;
 use Zero\Checkout\Model\RedirectPayment\ReturnResult;
 
 /**
@@ -19,7 +20,7 @@ use Zero\Checkout\Model\RedirectPayment\ReturnResult;
  * declined: cancelled; not approved: NOT_STARTED. A second capture gets
  * ORDER_ALREADY_CAPTURED and reads the order instead.
  */
-class OrderUpdater
+class OrderUpdater implements OrderUpdaterInterface
 {
     public function __construct(
         private readonly Api $api,
@@ -31,6 +32,27 @@ class OrderUpdater
      * @return string A ReturnResult state
      * @throws LocalizedException When PayPal doesn't answer
      */
+    /**
+     * The customer is back from PayPal (a headless storefront's zeroPaymentReturn):
+     * what the Return and Cancel controllers do for the theme, by the outcome.
+     *
+     * @inheritdoc
+     */
+    public function update(Order $order, array $params = []): string
+    {
+        if (($params['outcome'] ?? '') === 'cancel') {
+            $this->cancel($order);
+
+            return ReturnResult::FAILED;
+        }
+        $state = $this->capture($order);
+        if ($state === ReturnResult::NOT_STARTED) {
+            $this->cancel($order);
+        }
+
+        return $state;
+    }
+
     public function capture(Order $order): string
     {
         $paypalOrderId = (string) $order->getPayment()?->getAdditionalInformation(Payment::PAYPAL_ORDER_ID);

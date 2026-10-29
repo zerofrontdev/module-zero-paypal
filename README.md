@@ -20,7 +20,7 @@ bin/magento setup:static-content:deploy # production mode
 bin/magento cache:flush
 ```
 
-Composer installs `zerofront/module-zero-checkout` with it.
+Composer installs `zerofront/module-zero-core`, `zerofront/module-zero-checkout` with it.
 
 Part of [`zerofront/zero`](https://zerofront.dev), which installs the Zero theme and every Zero module at once.
 

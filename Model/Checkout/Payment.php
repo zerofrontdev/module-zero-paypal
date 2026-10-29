@@ -25,6 +25,7 @@ use Magento\Quote\Api\Data\CartInterface;
 use Magento\Sales\Model\Order;
 use Magento\Store\Model\ScopeInterface;
 use Zero\Checkout\Controller\Checkout\Placeorder;
+use Zero\Checkout\Model\RedirectPayment\ReturnUrl;
 
 /**
  * PayPal Checkout (zero_paypal_checkout, Orders API v2): a PayPal order
@@ -76,6 +77,7 @@ class Payment extends AbstractMethod
         Logger $logger,
         private readonly Api $api,
         private readonly UrlInterface $urlBuilder,
+        private readonly ReturnUrl $returnUrl,
         ?AbstractResource $resource = null,
         ?AbstractDb $resourceCollection = null,
         array $data = []
@@ -126,8 +128,10 @@ class Payment extends AbstractMethod
                 'amount' => self::amount($order, (float) $order->getGrandTotal()),
             ]],
             'payment_source' => ['paypal' => ['experience_context' => [
-                'return_url' => $this->urlBuilder->getUrl('zero_paypal/checkout/return', $urlParams),
-                'cancel_url' => $this->urlBuilder->getUrl('zero_paypal/checkout/cancel', $urlParams),
+                'return_url' => $this->returnUrl->headless($order, self::CODE, ['outcome' => 'return'])
+                    ?? $this->urlBuilder->getUrl('zero_paypal/checkout/return', $urlParams),
+                'cancel_url' => $this->returnUrl->headless($order, self::CODE, ['outcome' => 'cancel'])
+                    ?? $this->urlBuilder->getUrl('zero_paypal/checkout/cancel', $urlParams),
                 'user_action' => 'PAY_NOW',
                 'shipping_preference' => 'NO_SHIPPING',
                 'brand_name' => mb_substr((string) $this->_scopeConfig->getValue(
