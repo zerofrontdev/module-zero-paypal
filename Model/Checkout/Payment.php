@@ -25,6 +25,7 @@ use Magento\Quote\Api\Data\CartInterface;
 use Magento\Sales\Model\Order;
 use Magento\Store\Model\ScopeInterface;
 use Zero\Checkout\Controller\Checkout\Placeorder;
+use Zero\Checkout\Model\Money\RefundKey;
 use Zero\Checkout\Model\RedirectPayment\ReturnUrl;
 
 /**
@@ -175,10 +176,17 @@ class Payment extends AbstractMethod
         }
         /** @var Order $order */
         $order = $payment->getOrder();
+        // In the order's currency: the credit memo's own total when there is one (no rate rounding).
+        $memo = method_exists($payment, 'getCreditmemo') ? $payment->getCreditmemo() : null;
+        $orderAmount = $memo && $memo->getGrandTotal() !== null
+            ? (float) $memo->getGrandTotal()
+            : (float) $amount * (float) ($order->getBaseToOrderRate() ?: 1);
         $refund = $this->api->refundCapture(
             $captureId,
-            self::amount($order, (float) $amount * (float) ($order->getBaseToOrderRate() ?: 1)),
-            (int) $order->getStoreId()
+            self::amount($order, $orderAmount),
+            (int) $order->getStoreId(),
+            // The same for a retry of this credit memo, another for the next partial refund.
+            RefundKey::for($payment, (float) $amount, 'zero-')
         );
         $payment->setTransactionId((string) ($refund['id'] ?? $captureId . '-refund'))->setIsTransactionClosed(true);
 

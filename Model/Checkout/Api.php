@@ -15,6 +15,7 @@ use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\HTTP\Client\CurlFactory;
 use Magento\Store\Model\ScopeInterface;
 use Psr\Log\LoggerInterface;
+use Zero\Checkout\Model\Money\MinorUnits;
 use Zero\Core\Model\Http\JsonClient;
 
 /**
@@ -67,11 +68,20 @@ class Api
     }
 
     /**
+     * @param string $requestId PayPal-Request-Id: the same for a retry of this refund
+     *     (PayPal answers with the first result), another for another refund (RefundKey)
      * @throws LocalizedException
      */
-    public function refundCapture(string $captureId, array $amount, ?int $storeId): array
+    public function refundCapture(string $captureId, array $amount, ?int $storeId, string $requestId): array
     {
-        return $this->send('POST', '/v2/payments/captures/' . rawurlencode($captureId) . '/refund', ['amount' => $amount], $storeId);
+        return $this->send(
+            'POST',
+            '/v2/payments/captures/' . rawurlencode($captureId) . '/refund',
+            ['amount' => $amount],
+            $storeId,
+            false,
+            $requestId
+        );
     }
 
     public function isConfigured(?int $storeId): bool
@@ -84,20 +94,28 @@ class Api
      */
     public static function value(float $amount, string $currency): string
     {
-        return number_format($amount, in_array($currency, ['HUF', 'JPY', 'TWD'], true) ? 0 : 2, '.', '');
+        return MinorUnits::format($amount, $currency, MinorUnits::PAYPAL);
     }
 
     /**
+     * @param string|null $requestId PayPal-Request-Id of a POST; null: one from the path
+     *     and body, so the same request (e.g. capturing an order) is never done twice
      * @throws LocalizedException
      */
-    private function send(string $method, string $path, ?array $body, ?int $storeId, bool $acceptRefusal = false): array
-    {
+    private function send(
+        string $method,
+        string $path,
+        ?array $body,
+        ?int $storeId,
+        bool $acceptRefusal = false,
+        ?string $requestId = null
+    ): array {
         $token = $this->accessToken($storeId);
         try {
             // Retried requests aren't done twice (PayPal-Request-Id makes them idempotent).
             $headers = ['Authorization' => 'Bearer ' . $token];
             if ($method === 'POST') {
-                $headers['PayPal-Request-Id'] = sha1($path . json_encode($body));
+                $headers['PayPal-Request-Id'] = $requestId ?? sha1($path . json_encode($body));
             }
             ['status' => $status, 'body' => $answer] = $this->client->request(
                 $method,

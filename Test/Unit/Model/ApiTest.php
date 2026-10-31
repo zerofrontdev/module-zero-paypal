@@ -28,21 +28,35 @@ class ApiTest extends TestCase
     private const HOST = 'https://api-m.paypal.com';
 
     private JsonClient&MockObject $client;
-    private LoggerInterface&MockObject $logger;
+    private LoggerInterface $logger;
     private Api $api;
 
     protected function setUp(): void
     {
         $this->client = $this->createMock(JsonClient::class);
-        $scopeConfig = $this->createMock(ScopeConfigInterface::class);
+        $this->api = $this->api($this->createStub(LoggerInterface::class));
+    }
+
+    private function api(LoggerInterface $logger): Api
+    {
+        $this->logger = $logger;
+        $scopeConfig = $this->createStub(ScopeConfigInterface::class);
         $scopeConfig->method('getValue')->willReturn('client-or-secret');
         $scopeConfig->method('isSetFlag')->willReturn(false);
-        $cache = $this->createMock(CacheInterface::class);
+        $cache = $this->createStub(CacheInterface::class);
         $cache->method('load')->willReturn('cached');
-        $encryptor = $this->createMock(EncryptorInterface::class);
+        $encryptor = $this->createStub(EncryptorInterface::class);
         $encryptor->method('decrypt')->willReturn('access-token');
-        $this->logger = $this->createMock(LoggerInterface::class);
-        $this->api = new Api($this->createMock(CurlFactory::class), $this->client, $scopeConfig, $encryptor, $cache, $this->logger, 14);
+
+        return new Api($this->createStub(CurlFactory::class), $this->client, $scopeConfig, $encryptor, $cache, $logger, 14);
+    }
+
+    private function loggerMock(): LoggerInterface&MockObject
+    {
+        $logger = $this->createMock(LoggerInterface::class);
+        $this->api = $this->api($logger);
+
+        return $logger;
     }
 
     public function testAnOrderIsPostedWithTheBearerAndAnIdempotencyKey(): void
@@ -69,15 +83,15 @@ class ApiTest extends TestCase
 
     public function testACaptureRefusedWithA4xxReturnsPayPalSAnswer(): void
     {
-        $this->client->method('request')->willReturn(['status' => 422, 'body' => ['name' => 'UNPROCESSABLE_ENTITY']]);
+        $this->client->expects(self::once())->method('request')->willReturn(['status' => 422, 'body' => ['name' => 'UNPROCESSABLE_ENTITY']]);
 
         self::assertSame('UNPROCESSABLE_ENTITY', $this->api->captureOrder('O1', 1)['name']);
     }
 
     public function testARefusalIsLoggedAndCarriesPayPalSErrorName(): void
     {
-        $this->client->method('request')->willReturn(['status' => 400, 'body' => ['name' => 'INVALID_REQUEST']]);
-        $this->logger->expects(self::once())->method('warning')->with(self::stringContains('HTTP 400 INVALID_REQUEST'));
+        $this->client->expects(self::once())->method('request')->willReturn(['status' => 400, 'body' => ['name' => 'INVALID_REQUEST']]);
+        $this->loggerMock()->expects(self::once())->method('warning')->with(self::stringContains('HTTP 400 INVALID_REQUEST'));
 
         try {
             $this->api->getOrder('O1', 1);
@@ -89,11 +103,47 @@ class ApiTest extends TestCase
 
     public function testATransportFailureBecomesAFriendlyError(): void
     {
-        $this->client->method('request')->willThrowException(new \RuntimeException('timed out'));
-        $this->logger->expects(self::once())->method('warning');
+        $this->client->expects(self::once())->method('request')->willThrowException(new \RuntimeException('timed out'));
+        $this->loggerMock()->expects(self::once())->method('warning');
 
         $this->expectException(LocalizedException::class);
         $this->expectExceptionMessage('not answering');
         $this->api->getOrder('O1', 1);
+    }
+
+    public function testRefundSendsTheGivenRequestId(): void
+    {
+        $amount = ['currency_code' => 'EUR', 'value' => '8.00'];
+        $this->client->expects(self::once())->method('request')
+            ->with('POST', self::HOST . '/v2/payments/captures/C1/refund', ['amount' => $amount], [
+                'Authorization' => 'Bearer access-token',
+                'PayPal-Request-Id' => 'zero-000000123-r0-1000',
+            ], 14, true)
+            ->willReturn(['status' => 201, 'body' => ['id' => 'R1', 'status' => 'COMPLETED']]);
+
+        self::assertSame('R1', $this->api->refundCapture('C1', $amount, 1, 'zero-000000123-r0-1000')['id']);
+    }
+
+    public function testCaptureKeepsDeterministicRequestId(): void
+    {
+        $path = '/v2/checkout/orders/O1/capture';
+        $this->client->expects(self::exactly(2))->method('request')
+            ->with('POST', self::HOST . $path, null, [
+                'Authorization' => 'Bearer access-token',
+                'PayPal-Request-Id' => sha1($path . json_encode(null)),
+            ], 14, true)
+            ->willReturn(['status' => 201, 'body' => ['status' => 'COMPLETED']]);
+
+        $this->api->captureOrder('O1', 1);
+        $this->api->captureOrder('O1', 1);
+    }
+
+    public function testValueFollowsPaypalDecimals(): void
+    {
+        $this->client->expects(self::never())->method('request');
+        self::assertSame('10.46', Api::value(10.455, 'USD'));
+        self::assertSame('1000', Api::value(1000.4, 'JPY'));
+        self::assertSame('1045', Api::value(1045.2, 'HUF'));
+        self::assertSame('12.00', Api::value(12, 'EUR'));
     }
 }
